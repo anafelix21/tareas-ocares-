@@ -1,0 +1,181 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Laboratorio AgroPacayales - Kafka + JMX Exporter (EC2-Kafka), Prometheus + Grafana (EC2-Monitoreo)
+  y cluster Kubernetes K3s (k8s-master + 3 nodos dedicados: Frontend React, Backend 1 Spring Boot,
+  Backend 2 Python Flask). Crea las 6 EC2 y sus Security Groups de una sola vez, sin editar nada.
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: vockey
+    Description: Llave SSH del Learner Lab (dejar vockey)
+  UbuntuAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Ubuntu 24.04 LTS (se resuelve sola, no tocar)
+  ScriptsUrl:
+    Type: String
+    Default: https://raw.githubusercontent.com/anafelix21/tareas-ocares-/main/data-script
+    Description: Carpeta raw de GitHub con los scripts de cada EC2 (no tocar)
+  DockerUser:
+    Type: String
+    Default: anafelixmendoza21
+    Description: Usuario de Docker Hub con las imagenes agropacayales-*:2.0
+
+Resources:
+  # ---------------------------------------------------------------- Security Groups
+  SgKafka:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-sg-kafka
+      GroupDescription: EC2-Kafka - SSH, Kafka broker 9092 y JMX Exporter 7071
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
+        - {IpProtocol: tcp, FromPort: 9092, ToPort: 9092, CidrIp: 0.0.0.0/0, Description: Kafka Broker}
+        - {IpProtocol: tcp, FromPort: 7071, ToPort: 7071, SourceSecurityGroupId: !GetAtt SgMonitoreo.GroupId, Description: JMX Exporter (solo Prometheus)}
+      Tags: [{Key: Name, Value: sg-kafka}]
+
+  SgMonitoreo:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-sg-monitoreo
+      GroupDescription: EC2-Monitoreo - SSH, Prometheus 9090 y Grafana 3000
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
+        - {IpProtocol: tcp, FromPort: 9090, ToPort: 9090, CidrIp: 0.0.0.0/0, Description: Prometheus UI}
+        - {IpProtocol: tcp, FromPort: 3000, ToPort: 3000, CidrIp: 0.0.0.0/0, Description: Grafana UI}
+      Tags: [{Key: Name, Value: sg-monitoreo}]
+
+  SgK8s:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-sg-k8s
+      GroupDescription: Cluster K3s - SSH, NodePorts 30000-32767 y trafico interno del cluster
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
+        - {IpProtocol: tcp, FromPort: 30000, ToPort: 32767, CidrIp: 0.0.0.0/0, Description: NodePorts (apps y metricas)}
+      Tags: [{Key: Name, Value: sg-k8s}]
+
+  SgK8sInterno:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt SgK8s.GroupId
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !GetAtt SgK8s.GroupId
+      Description: Trafico entre nodos K3s (6443, 10250, flannel 8472)
+
+  # ---------------------------------------------------------------- EC2 1: Kafka
+  EC2Kafka:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: t3.medium
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Select [0, !GetAZs '']
+      SecurityGroupIds: [!GetAtt SgKafka.GroupId]
+      BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 20, VolumeType: gp3}}]
+      Tags: [{Key: Name, Value: EC2-Kafka}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/kafka.sh -o /root/lab.sh
+          bash /root/lab.sh
+
+  # ---------------------------------------------------------------- Cluster K3s
+  K8sMaster:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: t3.medium
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Select [0, !GetAZs '']
+      SecurityGroupIds: [!GetAtt SgK8s.GroupId]
+      BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 20, VolumeType: gp3}}]
+      Tags: [{Key: Name, Value: k8s-master}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/k8s-master.sh -o /root/lab.sh
+          DOCKER_USER=${DockerUser} bash /root/lab.sh
+
+  K8sNodeFrontend:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: t3.small
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Select [0, !GetAZs '']
+      SecurityGroupIds: [!GetAtt SgK8s.GroupId]
+      BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 16, VolumeType: gp3}}]
+      Tags: [{Key: Name, Value: k8s-node-frontend}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
+          MASTER_IP=${K8sMaster.PrivateIp} ROLE=frontend bash /root/lab.sh
+
+  K8sNodeBackend1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: t3.medium
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Select [0, !GetAZs '']
+      SecurityGroupIds: [!GetAtt SgK8s.GroupId]
+      BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 16, VolumeType: gp3}}]
+      Tags: [{Key: Name, Value: k8s-node-backend1}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
+          MASTER_IP=${K8sMaster.PrivateIp} ROLE=backend1 bash /root/lab.sh
+
+  K8sNodeBackend2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: t3.small
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Select [0, !GetAZs '']
+      SecurityGroupIds: [!GetAtt SgK8s.GroupId]
+      BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 16, VolumeType: gp3}}]
+      Tags: [{Key: Name, Value: k8s-node-backend2}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
+          MASTER_IP=${K8sMaster.PrivateIp} ROLE=backend2 bash /root/lab.sh
+
+  # ---------------------------------------------------------------- EC2 2: Monitoreo
+  EC2Monitoreo:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: t3.small
+      KeyName: !Ref KeyName
+      AvailabilityZone: !Select [0, !GetAZs '']
+      SecurityGroupIds: [!GetAtt SgMonitoreo.GroupId]
+      BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 16, VolumeType: gp3}}]
+      Tags: [{Key: Name, Value: EC2-Monitoreo}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/monitoreo.sh -o /root/lab.sh
+          KAFKA_IP=${EC2Kafka.PrivateIp} MASTER_IP=${K8sMaster.PrivateIp} BACKEND2_IP=${K8sNodeBackend2.PrivateIp} bash /root/lab.sh
+Outputs:
+  Grafana:
+    Value: !Sub http://${EC2Monitoreo.PublicIp}:3000
+    Description: Grafana (admin / admin)
+  PrometheusTargets:
+    Value: !Sub http://${EC2Monitoreo.PublicIp}:9090/targets
+  PrometheusAlertas:
+    Value: !Sub http://${EC2Monitoreo.PublicIp}:9090/alerts
+  Frontend:
+    Value: !Sub http://${K8sNodeFrontend.PublicIp}:30000
+  Backend1Swagger:
+    Value: !Sub http://${K8sNodeBackend1.PublicIp}:30001/swagger-ui.html
+  Backend2Metricas:
+    Value: !Sub http://${K8sNodeBackend2.PublicIp}:30002/metrics
+  KafkaIpPrivada:
+    Value: !GetAtt EC2Kafka.PrivateIp
+    Description: Debe coincidir con el target de prometheus.yml (captura 8)
