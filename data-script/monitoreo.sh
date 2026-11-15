@@ -2,7 +2,8 @@
 # EC2-Monitoreo: Prometheus (9090) + Grafana (3000) con dashboard y alertas
 # Lo descarga y ejecuta el user data de la plantilla lab-kafka-k8s.yaml
 # Variables que recibe: KAFKA_IP, MASTER_IP, BACKEND2_IP
-: "${KAFKA_IP:?falta KAFKA_IP}" "${MASTER_IP:?falta MASTER_IP}" "${BACKEND2_IP:?falta BACKEND2_IP}"
+# IPs privadas fijas de la plantilla (se pueden sobreescribir con variables)
+KAFKA_IP=${KAFKA_IP:-10.0.1.10}; MASTER_IP=${MASTER_IP:-10.0.1.20}; BACKEND2_IP=${BACKEND2_IP:-10.0.1.23}
 exec > >(tee -a /var/log/lab.log) 2>&1
 log() { echo "[$(date +%H:%M:%S)] [LAB] $*"; }
 export DEBIAN_FRONTEND=noninteractive
@@ -108,7 +109,6 @@ cat > $M/grafana/dashboards/lab.json <<'EOF'
    "targets": [{"refId": "A", "expr": "sum(kube_pod_status_phase{phase=\"Pending\"})", "legendFormat": "pods Pending"}]}
  ]}
 EOF
-  $M/grafana/provisioning/dashboards/lab.yml $M/grafana/dashboards/lab.json
 chmod -R a+rX $M
 
 # Esperar SOLO los 2 pulls (un 'wait' sin PIDs tambien espera al tee del log y se cuelga)
