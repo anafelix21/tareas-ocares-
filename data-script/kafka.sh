@@ -15,10 +15,11 @@ bajar_kafka() {
   done
   curl -fsSL --retry 5 https://archive.apache.org/dist/kafka/3.7.1/$f -o /tmp/kafka.tgz
 }
-bajar_kafka &
-curl -fsSL --retry 5 https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.19.0/jmx_prometheus_javaagent-0.19.0.jar   -o /opt/jmx/jmx_prometheus_javaagent-0.19.0.jar &
+bajar_kafka & P1=$!
+curl -fsSL --retry 5 https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.19.0/jmx_prometheus_javaagent-0.19.0.jar   -o /opt/jmx/jmx_prometheus_javaagent-0.19.0.jar & P2=$!
 apt-get update -y && apt-get install -y --no-install-recommends openjdk-17-jre-headless tmux
-wait
+# Esperar SOLO las 2 descargas (un 'wait' sin PIDs tambien espera al tee del log y se cuelga)
+wait $P1 $P2
 T=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')
 PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/local-ipv4)
 id kafka >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin kafka

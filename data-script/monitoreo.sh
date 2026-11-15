@@ -10,8 +10,8 @@ echo 'DPkg::Lock::Timeout "600";' > /etc/apt/apt.conf.d/99lab-lock
 apt-get update -y && apt-get install -y --no-install-recommends docker.io
 systemctl enable --now docker
 # Bajar las 2 imagenes en paralelo mientras se escriben las configuraciones
-docker pull -q prom/prometheus:v2.53.0 >/dev/null &
-docker pull -q grafana/grafana:9.5.2 >/dev/null &
+docker pull -q prom/prometheus:v2.53.0 >/dev/null & P1=$!
+docker pull -q grafana/grafana:9.5.2 >/dev/null & P2=$!
 usermod -aG docker ubuntu
 M=/opt/monitoreo
 mkdir -p $M/grafana/provisioning/datasources $M/grafana/provisioning/dashboards $M/grafana/dashboards
@@ -111,7 +111,9 @@ EOF
   $M/grafana/provisioning/dashboards/lab.yml $M/grafana/dashboards/lab.json
 chmod -R a+rX $M
 
-wait
+# Esperar SOLO los 2 pulls (un 'wait' sin PIDs tambien espera al tee del log y se cuelga)
+wait $P1 $P2
+docker rm -f prometheus grafana >/dev/null 2>&1
 docker network create monitoreo 2>/dev/null || true
 docker run -d --name prometheus --restart always --network monitoreo -p 9090:9090 \
   -v $M/prometheus.yml:/etc/prometheus/prometheus.yml:ro \
