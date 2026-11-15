@@ -106,23 +106,23 @@ Si no se ve la columna *Private IPv4 address*: ícono ⚙️ (Preferences) arrib
 
 ## 3. Captura 2: grupo de seguridad de Kafka
 
-**EC2 → Security Groups →** `sg-kafka` → pestaña **Inbound rules**.
+**EC2 → Security Groups →** `kafka-sg` → pestaña **Inbound rules**.
 
 | Puerto | Origen | Para qué |
 | :-- | :-- | :-- |
 | 22 | 0.0.0.0/0 | SSH / Instance Connect |
 | 9092 | 0.0.0.0/0 | Kafka Broker |
-| 7071 | `sg-monitoreo` | JMX Exporter (solo lo puede leer Prometheus) |
+| 7071 | `monitoreo-sg` | JMX Exporter (solo lo puede leer Prometheus) |
 
 > 📸 **CAPTURA 2 — Grupo de Seguridad de Kafka (EC2 1):** reglas 22, 9092 y 7071.
 
 ## 4. Captura 3: grupo de seguridad de Monitoreo
 
-**Security Groups →** `sg-monitoreo` → **Inbound rules**: 22, 9090 (Prometheus UI) y 3000 (Grafana UI), origen 0.0.0.0/0.
+**Security Groups →** `monitoreo-sg` → **Inbound rules**: 22, 9090 (Prometheus UI) y 3000 (Grafana UI), origen 0.0.0.0/0.
 
 > 📸 **CAPTURA 3 — Grupo de Seguridad de Monitoreo (EC2 2):** reglas 22, 9090 y 3000.
 
-(Existe un tercero, `sg-k8s`, para el clúster: 22, NodePorts 30000-32767 y tráfico interno entre nodos.)
+(Existe un tercero, `k8s-sg`, para el clúster: 22, NodePorts 30000-32767 y tráfico interno entre nodos.)
 
 ---
 
@@ -379,6 +379,7 @@ lab-restaurar
 | Síntoma | Causa | Solución |
 | :-- | :-- | :-- |
 | `/var/log/lab.log` no existe y nada se instala | La EC2 no pudo descargar su script de GitHub | Ver **Actions → Monitor and troubleshoot → Get system log**; el repo debe ser **público** |
+| Stack en `ROLLBACK_COMPLETE` (cualquier error) | Un stack fallido no se puede reusar | **CloudFormation → stack → Delete**, esperar *DELETE_COMPLETE* y crearlo de nuevo con la plantilla actual |
 | Stack en `ROLLBACK_COMPLETE` por *VPC limit* | Quedaron VPC de stacks anteriores (el Learner Lab permite 5) | Borrar los stacks viejos en CloudFormation y crear de nuevo |
 | Stack falla por *instance type* o *limit* | Hay otras EC2 encendidas del Learner Lab | Apagar/terminar las instancias viejas y volver a crear el stack |
 | Instance Connect no conecta | La EC2 aún está arrancando | Esperar 2 min a *Status check 2/2* |

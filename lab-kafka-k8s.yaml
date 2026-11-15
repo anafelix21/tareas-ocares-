@@ -60,37 +60,37 @@ Resources:
   SgKafka:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: sg-kafka
+      GroupName: kafka-sg
       VpcId: !Ref Vpc
       GroupDescription: EC2-Kafka - SSH, Kafka broker 9092 y JMX Exporter 7071
       SecurityGroupIngress:
         - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
         - {IpProtocol: tcp, FromPort: 9092, ToPort: 9092, CidrIp: 0.0.0.0/0, Description: Kafka Broker}
         - {IpProtocol: tcp, FromPort: 7071, ToPort: 7071, SourceSecurityGroupId: !GetAtt SgMonitoreo.GroupId, Description: JMX Exporter (solo Prometheus)}
-      Tags: [{Key: Name, Value: sg-kafka}]
+      Tags: [{Key: Name, Value: kafka-sg}]
 
   SgMonitoreo:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: sg-monitoreo
+      GroupName: monitoreo-sg
       VpcId: !Ref Vpc
       GroupDescription: EC2-Monitoreo - SSH, Prometheus 9090 y Grafana 3000
       SecurityGroupIngress:
         - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
         - {IpProtocol: tcp, FromPort: 9090, ToPort: 9090, CidrIp: 0.0.0.0/0, Description: Prometheus UI}
         - {IpProtocol: tcp, FromPort: 3000, ToPort: 3000, CidrIp: 0.0.0.0/0, Description: Grafana UI}
-      Tags: [{Key: Name, Value: sg-monitoreo}]
+      Tags: [{Key: Name, Value: monitoreo-sg}]
 
   SgK8s:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: sg-k8s
+      GroupName: k8s-sg
       VpcId: !Ref Vpc
       GroupDescription: Cluster K3s - SSH, NodePorts 30000-32767 y trafico interno del cluster
       SecurityGroupIngress:
         - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
         - {IpProtocol: tcp, FromPort: 30000, ToPort: 32767, CidrIp: 0.0.0.0/0, Description: NodePorts (apps y metricas)}
-      Tags: [{Key: Name, Value: sg-k8s}]
+      Tags: [{Key: Name, Value: k8s-sg}]
 
   SgK8sInterno:
     Type: AWS::EC2::SecurityGroupIngress
