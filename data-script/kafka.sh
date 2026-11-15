@@ -5,17 +5,26 @@ exec > >(tee -a /var/log/lab.log) 2>&1
 log() { echo "[$(date +%H:%M:%S)] [LAB] $*"; }
 export DEBIAN_FRONTEND=noninteractive
 echo 'DPkg::Lock::Timeout "600";' > /etc/apt/apt.conf.d/99lab-lock
-apt-get update -y && apt-get install -y openjdk-17-jdk-headless tmux netcat-openbsd curl
+# Descargas grandes EN PARALELO con apt. Si un servidor va lento (<500 KB/s por 15 s) se pasa al siguiente.
+mkdir -p /opt/kafka /opt/jmx
+bajar_kafka() {
+  local f=kafka_2.13-3.7.1.tgz
+  for u in https://archive.apache.org/dist/kafka/3.7.1/$f https://repo.huaweicloud.com/apache/kafka/3.7.1/$f; do
+    curl -fsSL --speed-limit 500000 --speed-time 15 "$u" -o /tmp/kafka.tgz && return 0
+    log "Descarga lenta o fallida en $u, probando otro servidor..."
+  done
+  curl -fsSL --retry 5 https://archive.apache.org/dist/kafka/3.7.1/$f -o /tmp/kafka.tgz
+}
+bajar_kafka &
+curl -fsSL --retry 5 https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.19.0/jmx_prometheus_javaagent-0.19.0.jar   -o /opt/jmx/jmx_prometheus_javaagent-0.19.0.jar &
+apt-get update -y && apt-get install -y --no-install-recommends openjdk-17-jre-headless tmux
+wait
 T=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')
 PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/local-ipv4)
 id kafka >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin kafka
 
-log "Descargando Kafka 3.7.1 y JMX Exporter 0.19.0"
-curl -fsSL https://archive.apache.org/dist/kafka/3.7.1/kafka_2.13-3.7.1.tgz -o /tmp/kafka.tgz
-rm -rf /opt/kafka && mkdir -p /opt/kafka /opt/jmx
+log "Kafka 3.7.1 y JMX Exporter 0.19.0 descargados"
 tar -xzf /tmp/kafka.tgz -C /opt/kafka --strip-components=1
-curl -fsSL https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.19.0/jmx_prometheus_javaagent-0.19.0.jar \
-  -o /opt/jmx/jmx_prometheus_javaagent-0.19.0.jar
 
 # Reglas JMX Exporter: MBeans de Kafka -> metricas Prometheus
 cat > /opt/jmx/jmx_config.yaml <<'EOF'
@@ -69,7 +78,7 @@ Requires=zookeeper.service
 User=kafka
 Environment="KAFKA_HEAP_OPTS=-Xms1G -Xmx1G"
 Environment="KAFKA_OPTS=-javaagent:/opt/jmx/jmx_prometheus_javaagent-0.19.0.jar=7071:/opt/jmx/jmx_config.yaml"
-ExecStartPre=/bin/sleep 15
+ExecStartPre=/bin/bash -c 'until (echo > /dev/tcp/127.0.0.1/2181) 2>/dev/null; do sleep 1; done'
 ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/server.properties
 Restart=on-failure
 [Install]
@@ -100,5 +109,5 @@ cat > /usr/local/bin/kafka-trafico <<'EOF'
 EOF
 chmod +x /usr/local/bin/kafka-demo /usr/local/bin/kafka-trafico
 
-for p in 2181 9092 7071; do until nc -z -w 3 localhost $p; do log "Esperando puerto $p..."; sleep 10; done; done
+for p in 2181 9092 7071; do until (echo > /dev/tcp/127.0.0.1/$p) 2>/dev/null; do sleep 2; done; done
 log "KAFKA LISTO: broker 9092, ZooKeeper 2181, JMX Exporter 7071 (IP privada $PRIVATE_IP)"

@@ -3,6 +3,24 @@
 Todo se crea **solo** con **un archivo**: [`lab-kafka-k8s.yaml`](lab-kafka-k8s.yaml) (CloudFormation).
 No hay que lanzar instancias una por una, copiar user data, cambiar nombres, IPs ni namespaces, y **no se usa el CMD de la PC**: las terminales se abren en el navegador con **EC2 Instance Connect**.
 
+## ⏱ Tiempo total del despliegue: ~7 minutos
+
+| Minuto | Qué pasa |
+| :-- | :-- |
+| 0 – 1 | Subir la plantilla y **Submit** |
+| 1 – 2 | CloudFormation crea la red y lanza **las 6 EC2 a la vez** (ninguna espera a otra: tienen IPs privadas fijas) |
+| 2 – 4 | Cada EC2 instala lo suyo en paralelo: Kafka, Docker y K3s |
+| 4 – 7 | Los nodos bajan sus imágenes y arrancan los pods → **todo LISTO** |
+
+Mientras termina, ya se pueden sacar las **capturas 1, 2 y 3** (consola de AWS).
+
+| EC2 | IP privada fija |
+| :-- | :-- |
+| `EC2-Kafka` | `10.0.1.10` |
+| `EC2-Monitoreo` | `10.0.1.11` |
+| `k8s-master` | `10.0.1.20` |
+| `k8s-node-frontend` / `backend1` / `backend2` | `10.0.1.21` / `.22` / `.23` |
+
 **Por qué el user data es tan corto:** AWS solo acepta 16 KB de user data por instancia. Por eso los scripts completos están en la carpeta [`data-script/`](data-script/) de este repo, y el user data de cada EC2 tiene solo 3 líneas: descarga su script desde GitHub y lo ejecuta pasándole las IPs privadas que CloudFormation ya conoce.
 
 | Script | Lo ejecuta | Variables que recibe |
@@ -58,7 +76,7 @@ No hay que lanzar instancias una por una, copiar user data, cambiar nombres, IPs
 - [ ] Página *Configure stack options*: no tocar → **Next**
 - [ ] **Submit**
 
-Esperar **CREATE_COMPLETE** (~3 min). Luego el software sigue instalándose solo dentro de las EC2 **10–12 min más**.
+Esperar **CREATE_COMPLETE** (~1–2 min). El software termina de instalarse solo dentro de las EC2 **~5 min después**.
 
 > Pestaña **Outputs** del stack: quedan los links de Grafana, Prometheus, Frontend, etc. y la **IP privada de Kafka** (para comparar en la captura 8).
 
@@ -78,7 +96,7 @@ Esperar la línea **`KAFKA LISTO`** / **`MONITOREO LISTO`** / **`CLUSTER LISTO`*
 
 # FASE 1 — Infraestructura
 
-## 2. Captura 1: instancias EC2 activas ⏱ min 5
+## 2. Captura 1: instancias EC2 activas ⏱ min 2
 
 **EC2 → Instances.** Las 6 deben estar en **Running** (Status check 2/2 tarda ~2 min más).
 
@@ -88,23 +106,23 @@ Si no se ve la columna *Private IPv4 address*: ícono ⚙️ (Preferences) arrib
 
 ## 3. Captura 2: grupo de seguridad de Kafka
 
-**EC2 → Security Groups →** `lab-sg-kafka` → pestaña **Inbound rules**.
+**EC2 → Security Groups →** `sg-kafka` → pestaña **Inbound rules**.
 
 | Puerto | Origen | Para qué |
 | :-- | :-- | :-- |
 | 22 | 0.0.0.0/0 | SSH / Instance Connect |
 | 9092 | 0.0.0.0/0 | Kafka Broker |
-| 7071 | `lab-sg-monitoreo` | JMX Exporter (solo lo puede leer Prometheus) |
+| 7071 | `sg-monitoreo` | JMX Exporter (solo lo puede leer Prometheus) |
 
 > 📸 **CAPTURA 2 — Grupo de Seguridad de Kafka (EC2 1):** reglas 22, 9092 y 7071.
 
 ## 4. Captura 3: grupo de seguridad de Monitoreo
 
-**Security Groups →** `lab-sg-monitoreo` → **Inbound rules**: 22, 9090 (Prometheus UI) y 3000 (Grafana UI), origen 0.0.0.0/0.
+**Security Groups →** `sg-monitoreo` → **Inbound rules**: 22, 9090 (Prometheus UI) y 3000 (Grafana UI), origen 0.0.0.0/0.
 
 > 📸 **CAPTURA 3 — Grupo de Seguridad de Monitoreo (EC2 2):** reglas 22, 9090 y 3000.
 
-(Existe un tercero, `lab-sg-k8s`, para el clúster: 22, NodePorts 30000-32767 y tráfico interno entre nodos.)
+(Existe un tercero, `sg-k8s`, para el clúster: 22, NodePorts 30000-32767 y tráfico interno entre nodos.)
 
 ---
 
@@ -112,7 +130,7 @@ Si no se ve la columna *Private IPv4 address*: ícono ⚙️ (Preferences) arrib
 
 Abrir terminal en **EC2-Kafka** (Instance Connect) y esperar `KAFKA LISTO` en `tail -f /var/log/lab.log`.
 
-## 5. Captura 4: agente JMX Exporter ⏱ min 13
+## 5. Captura 4: agente JMX Exporter ⏱ min 6
 
 ```bash
 cat /opt/jmx/jmx_config.yaml
@@ -127,12 +145,10 @@ Debe verse `KAFKA_OPTS=-javaagent:/opt/jmx/jmx_prometheus_javaagent-0.19.0.jar=7
 
 ```bash
 ps aux | grep -E "zookeeper|kafka" | grep -v grep | cut -c1-200
-sudo jps -l
 curl -s localhost:7071/metrics | grep messagesinpersec
 ```
 
 - `ps aux`: un proceso con `QuorumPeerMain` (ZooKeeper) y otro con `kafka.Kafka` que lleva `-javaagent:...jmx_prometheus_javaagent-0.19.0.jar=7071`.
-- `jps`: `org.apache.zookeeper.server.quorum.QuorumPeerMain` y `kafka.Kafka`.
 - `curl`: el JMX Exporter respondiendo en 7071.
 
 > 📸 **CAPTURA 5 — Procesos de Kafka y ZooKeeper en ejecución.**
@@ -141,7 +157,7 @@ curl -s localhost:7071/metrics | grep messagesinpersec
 
 # FASE 3 — Producer y Consumer
 
-## 7. Captura 6: crear el tópico ⏱ min 16
+## 7. Captura 6: crear el tópico ⏱ min 8
 
 ```bash
 kafka-topics.sh --create --topic eventos-negocio --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
@@ -177,13 +193,13 @@ Cada mensaje aparece **al instante** a la derecha.
 
 Abrir terminal en **EC2-Monitoreo** y esperar `MONITOREO LISTO` en `tail -f /var/log/lab.log`.
 
-## 9. Captura 8: prometheus.yml ⏱ min 20
+## 9. Captura 8: prometheus.yml ⏱ min 10
 
 ```bash
 cat /opt/monitoreo/prometheus.yml
 ```
 
-El job `kafka_metrics` → `targets: ['IP_PRIVADA_DE_EC2-Kafka:7071']` (comparar con la columna Private IPv4 de `EC2-Kafka` o con el Output `KafkaIpPrivada`). Los otros dos jobs son los del clúster (FASE 6).
+El job `kafka_metrics` → `targets: ['10.0.1.10:7071']`, que es la **IP privada** de `EC2-Kafka` (comparar con la columna Private IPv4 de la captura 1). Los otros dos jobs son los del clúster (FASE 6).
 
 > 📸 **CAPTURA 8 — Archivo prometheus.yml.**
 
@@ -201,7 +217,7 @@ sudo docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
 
 # FASE 5 — Integración y visualización
 
-## 11. Captura 10: targets en Prometheus ⏱ min 22
+## 11. Captura 10: targets en Prometheus ⏱ min 11
 
 Navegador: `http://IP_PUBLICA_EC2-Monitoreo:9090/targets` (está en los Outputs del stack).
 
@@ -257,7 +273,7 @@ Scripts que dejó el user data (cada uno muestra los comandos `kubectl` que ejec
 | `lab-pending` | Escenario 3: escala el frontend a 20 réplicas |
 | `lab-restaurar` | Deja los 3 deployments sanos otra vez |
 
-## 14. Escenario 1 — OOMKilled en Backend 1 (Spring Boot) ⏱ min 30
+## 14. Escenario 1 — OOMKilled en Backend 1 (Spring Boot) ⏱ min 14
 
 ```bash
 lab-oom
@@ -288,7 +304,7 @@ Restaurar antes de seguir:
 lab-restaurar
 ```
 
-## 15. Escenario 2 — HTTP 5xx en Backend 2 (Python + Flask) ⏱ min 38
+## 15. Escenario 2 — HTTP 5xx en Backend 2 (Python + Flask) ⏱ min 18
 
 ```bash
 lab-5xx
@@ -319,7 +335,7 @@ El contador sube de 0 a 60. (Volver a ejecutar `lab-5xx` para que suba más.)
 
 > El Backend 2 publica `http_requests_total` en `:30002/metrics` mediante un envoltorio WSGI (ConfigMap `backend2-metrics`) que cuenta cada respuesta por método, ruta y código. La imagen Docker no se modifica.
 
-## 16. Escenario 3 — Saturación del nodo por escalado masivo ⏱ min 44
+## 16. Escenario 3 — Saturación del nodo por escalado masivo ⏱ min 22
 
 ```bash
 lab-pending
@@ -363,7 +379,7 @@ lab-restaurar
 | Síntoma | Causa | Solución |
 | :-- | :-- | :-- |
 | `/var/log/lab.log` no existe y nada se instala | La EC2 no pudo descargar su script de GitHub | Ver **Actions → Monitor and troubleshoot → Get system log**; el repo debe ser **público** |
-| Stack en `ROLLBACK_COMPLETE` con *already exists* | Ya hay grupos `lab-sg-*` de un intento anterior | Borrar el stack viejo, o crear el nuevo con otro nombre (p. ej. `lab2`) |
+| Stack en `ROLLBACK_COMPLETE` por *VPC limit* | Quedaron VPC de stacks anteriores (el Learner Lab permite 5) | Borrar los stacks viejos en CloudFormation y crear de nuevo |
 | Stack falla por *instance type* o *limit* | Hay otras EC2 encendidas del Learner Lab | Apagar/terminar las instancias viejas y volver a crear el stack |
 | Instance Connect no conecta | La EC2 aún está arrancando | Esperar 2 min a *Status check 2/2* |
 | `kafka-topics.sh: command not found` | La sesión se abrió antes de terminar el user data | Cerrar y abrir otra vez Instance Connect |

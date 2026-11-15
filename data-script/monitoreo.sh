@@ -7,8 +7,11 @@ exec > >(tee -a /var/log/lab.log) 2>&1
 log() { echo "[$(date +%H:%M:%S)] [LAB] $*"; }
 export DEBIAN_FRONTEND=noninteractive
 echo 'DPkg::Lock::Timeout "600";' > /etc/apt/apt.conf.d/99lab-lock
-apt-get update -y && apt-get install -y docker.io netcat-openbsd
+apt-get update -y && apt-get install -y --no-install-recommends docker.io
 systemctl enable --now docker
+# Bajar las 2 imagenes en paralelo mientras se escriben las configuraciones
+docker pull -q prom/prometheus:v2.53.0 >/dev/null &
+docker pull -q grafana/grafana:9.5.2 >/dev/null &
 usermod -aG docker ubuntu
 M=/opt/monitoreo
 mkdir -p $M/grafana/provisioning/datasources $M/grafana/provisioning/dashboards $M/grafana/dashboards
@@ -108,6 +111,7 @@ EOF
   $M/grafana/provisioning/dashboards/lab.yml $M/grafana/dashboards/lab.json
 chmod -R a+rX $M
 
+wait
 docker network create monitoreo 2>/dev/null || true
 docker run -d --name prometheus --restart always --network monitoreo -p 9090:9090 \
   -v $M/prometheus.yml:/etc/prometheus/prometheus.yml:ro \
@@ -118,5 +122,5 @@ docker run -d --name grafana --restart always --network monitoreo -p 3000:3000 \
   -v $M/grafana/provisioning:/etc/grafana/provisioning:ro \
   -v $M/grafana/dashboards:/var/lib/grafana/dashboards:ro \
   grafana/grafana:9.5.2
-for p in 9090 3000; do until nc -z -w 3 localhost $p; do log "Esperando puerto $p..."; sleep 10; done; done
+for p in 9090 3000; do until (echo > /dev/tcp/127.0.0.1/$p) 2>/dev/null; do sleep 2; done; done
 log "MONITOREO LISTO: Prometheus 9090, Grafana 3000. Kafka target: ${KAFKA_IP}:7071"

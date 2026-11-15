@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Laboratorio AgroPacayales - Kafka + JMX Exporter (EC2-Kafka), Prometheus + Grafana (EC2-Monitoreo)
   y cluster Kubernetes K3s (k8s-master + 3 nodos dedicados: Frontend React, Backend 1 Spring Boot,
-  Backend 2 Python Flask). Crea las 6 EC2 y sus Security Groups de una sola vez, sin editar nada.
+  Backend 2 Python Flask). Crea VPC, Security Groups y las 6 EC2 EN PARALELO (IPs privadas fijas), sin editar nada.
 
 Parameters:
   KeyName:
@@ -23,11 +23,45 @@ Parameters:
     Description: Usuario de Docker Hub con las imagenes agropacayales-*:2.0
 
 Resources:
+  # ---------------------------------------------------------------- Red propia (IPs privadas fijas)
+  # Con IPs fijas ninguna EC2 espera a otra: CloudFormation lanza las 6 a la vez.
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: lab-vpc}]
+  Igw:
+    Type: AWS::EC2::InternetGateway
+  IgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: {VpcId: !Ref Vpc, InternetGatewayId: !Ref Igw}
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: lab-subnet-publica}]
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: {VpcId: !Ref Vpc}
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttach
+    Properties: {RouteTableId: !Ref RouteTable, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref Igw}
+  SubnetRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref Subnet, RouteTableId: !Ref RouteTable}
+
   # ---------------------------------------------------------------- Security Groups
   SgKafka:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: !Sub ${AWS::StackName}-sg-kafka
+      GroupName: sg-kafka
+      VpcId: !Ref Vpc
       GroupDescription: EC2-Kafka - SSH, Kafka broker 9092 y JMX Exporter 7071
       SecurityGroupIngress:
         - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
@@ -38,7 +72,8 @@ Resources:
   SgMonitoreo:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: !Sub ${AWS::StackName}-sg-monitoreo
+      GroupName: sg-monitoreo
+      VpcId: !Ref Vpc
       GroupDescription: EC2-Monitoreo - SSH, Prometheus 9090 y Grafana 3000
       SecurityGroupIngress:
         - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
@@ -49,7 +84,8 @@ Resources:
   SgK8s:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: !Sub ${AWS::StackName}-sg-k8s
+      GroupName: sg-k8s
+      VpcId: !Ref Vpc
       GroupDescription: Cluster K3s - SSH, NodePorts 30000-32767 y trafico interno del cluster
       SecurityGroupIngress:
         - {IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: SSH}
@@ -67,101 +103,114 @@ Resources:
   # ---------------------------------------------------------------- EC2 1: Kafka
   EC2Kafka:
     Type: AWS::EC2::Instance
+    DependsOn: [DefaultRoute, SubnetRoute]
     Properties:
       ImageId: !Ref UbuntuAmi
       InstanceType: t3.medium
       KeyName: !Ref KeyName
-      AvailabilityZone: !Select [0, !GetAZs '']
+      SubnetId: !Ref Subnet
+      PrivateIpAddress: 10.0.1.10
       SecurityGroupIds: [!GetAtt SgKafka.GroupId]
       BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 20, VolumeType: gp3}}]
       Tags: [{Key: Name, Value: EC2-Kafka}]
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/kafka.sh -o /root/lab.sh
+          curl -fsSL --retry 60 --retry-delay 2 --retry-all-errors ${ScriptsUrl}/kafka.sh -o /root/lab.sh
           bash /root/lab.sh
 
   # ---------------------------------------------------------------- Cluster K3s
   K8sMaster:
     Type: AWS::EC2::Instance
+    DependsOn: [DefaultRoute, SubnetRoute]
     Properties:
       ImageId: !Ref UbuntuAmi
       InstanceType: t3.medium
       KeyName: !Ref KeyName
-      AvailabilityZone: !Select [0, !GetAZs '']
+      SubnetId: !Ref Subnet
+      PrivateIpAddress: 10.0.1.20
       SecurityGroupIds: [!GetAtt SgK8s.GroupId]
       BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 20, VolumeType: gp3}}]
       Tags: [{Key: Name, Value: k8s-master}]
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/k8s-master.sh -o /root/lab.sh
+          curl -fsSL --retry 60 --retry-delay 2 --retry-all-errors ${ScriptsUrl}/k8s-master.sh -o /root/lab.sh
           DOCKER_USER=${DockerUser} bash /root/lab.sh
 
   K8sNodeFrontend:
     Type: AWS::EC2::Instance
+    DependsOn: [DefaultRoute, SubnetRoute]
     Properties:
       ImageId: !Ref UbuntuAmi
       InstanceType: t3.small
       KeyName: !Ref KeyName
-      AvailabilityZone: !Select [0, !GetAZs '']
+      SubnetId: !Ref Subnet
+      PrivateIpAddress: 10.0.1.21
       SecurityGroupIds: [!GetAtt SgK8s.GroupId]
       BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 16, VolumeType: gp3}}]
       Tags: [{Key: Name, Value: k8s-node-frontend}]
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
-          MASTER_IP=${K8sMaster.PrivateIp} ROLE=frontend bash /root/lab.sh
+          curl -fsSL --retry 60 --retry-delay 2 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
+          MASTER_IP=10.0.1.20 ROLE=frontend bash /root/lab.sh
 
   K8sNodeBackend1:
     Type: AWS::EC2::Instance
+    DependsOn: [DefaultRoute, SubnetRoute]
     Properties:
       ImageId: !Ref UbuntuAmi
       InstanceType: t3.medium
       KeyName: !Ref KeyName
-      AvailabilityZone: !Select [0, !GetAZs '']
+      SubnetId: !Ref Subnet
+      PrivateIpAddress: 10.0.1.22
       SecurityGroupIds: [!GetAtt SgK8s.GroupId]
       BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 16, VolumeType: gp3}}]
       Tags: [{Key: Name, Value: k8s-node-backend1}]
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
-          MASTER_IP=${K8sMaster.PrivateIp} ROLE=backend1 bash /root/lab.sh
+          curl -fsSL --retry 60 --retry-delay 2 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
+          MASTER_IP=10.0.1.20 ROLE=backend1 bash /root/lab.sh
 
   K8sNodeBackend2:
     Type: AWS::EC2::Instance
+    DependsOn: [DefaultRoute, SubnetRoute]
     Properties:
       ImageId: !Ref UbuntuAmi
       InstanceType: t3.small
       KeyName: !Ref KeyName
-      AvailabilityZone: !Select [0, !GetAZs '']
+      SubnetId: !Ref Subnet
+      PrivateIpAddress: 10.0.1.23
       SecurityGroupIds: [!GetAtt SgK8s.GroupId]
       BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 16, VolumeType: gp3}}]
       Tags: [{Key: Name, Value: k8s-node-backend2}]
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
-          MASTER_IP=${K8sMaster.PrivateIp} ROLE=backend2 bash /root/lab.sh
+          curl -fsSL --retry 60 --retry-delay 2 --retry-all-errors ${ScriptsUrl}/k8s-worker.sh -o /root/lab.sh
+          MASTER_IP=10.0.1.20 ROLE=backend2 bash /root/lab.sh
 
   # ---------------------------------------------------------------- EC2 2: Monitoreo
   EC2Monitoreo:
     Type: AWS::EC2::Instance
+    DependsOn: [DefaultRoute, SubnetRoute]
     Properties:
       ImageId: !Ref UbuntuAmi
       InstanceType: t3.small
       KeyName: !Ref KeyName
-      AvailabilityZone: !Select [0, !GetAZs '']
+      SubnetId: !Ref Subnet
+      PrivateIpAddress: 10.0.1.11
       SecurityGroupIds: [!GetAtt SgMonitoreo.GroupId]
       BlockDeviceMappings: [{DeviceName: /dev/sda1, Ebs: {VolumeSize: 16, VolumeType: gp3}}]
       Tags: [{Key: Name, Value: EC2-Monitoreo}]
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          curl -fsSL --retry 30 --retry-delay 5 --retry-all-errors ${ScriptsUrl}/monitoreo.sh -o /root/lab.sh
-          KAFKA_IP=${EC2Kafka.PrivateIp} MASTER_IP=${K8sMaster.PrivateIp} BACKEND2_IP=${K8sNodeBackend2.PrivateIp} bash /root/lab.sh
+          curl -fsSL --retry 60 --retry-delay 2 --retry-all-errors ${ScriptsUrl}/monitoreo.sh -o /root/lab.sh
+          KAFKA_IP=10.0.1.10 MASTER_IP=10.0.1.20 BACKEND2_IP=10.0.1.23 bash /root/lab.sh
+
 Outputs:
   Grafana:
     Value: !Sub http://${EC2Monitoreo.PublicIp}:3000
@@ -177,5 +226,5 @@ Outputs:
   Backend2Metricas:
     Value: !Sub http://${K8sNodeBackend2.PublicIp}:30002/metrics
   KafkaIpPrivada:
-    Value: !GetAtt EC2Kafka.PrivateIp
+    Value: 10.0.1.10
     Description: Debe coincidir con el target de prometheus.yml (captura 8)

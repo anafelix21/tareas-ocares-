@@ -2,6 +2,8 @@
 
 Despliegue completo en **AWS Academy Learner Lab** con **una sola plantilla de CloudFormation**: crea las 6 EC2 y sus grupos de seguridad, y cada instancia se instala sola.
 
+⏱ **~7 minutos** de principio a fin: las 6 EC2 se lanzan **a la vez** (VPC propia con IPs privadas fijas, ninguna espera a otra) y cada una descarga e instala en paralelo.
+
 | Archivo | Para qué |
 | :-- | :-- |
 | [`MANUAL_KAFKA_LAB.md`](MANUAL_KAFKA_LAB.md) | ✅ **Empieza aquí.** Paso a paso con las 18 capturas |

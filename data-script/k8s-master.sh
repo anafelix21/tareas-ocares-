@@ -9,9 +9,9 @@ NS=agropacayales-namespace
 L=/home/ubuntu/lab
 log "Instalando K3s (control plane)"
 curl -sfL https://get.k3s.io | K3S_TOKEN=lab-kafka-k8s-2026 sh -s - server \
-  --write-kubeconfig-mode 644 --node-name k8s-master --disable traefik
+  --write-kubeconfig-mode 644 --node-name k8s-master --disable traefik,servicelb,metrics-server,local-storage
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-until kubectl get nodes >/dev/null 2>&1; do sleep 5; done
+until kubectl get nodes >/dev/null 2>&1; do sleep 2; done
 
 # kubectl del usuario ubuntu: namespace del proyecto por defecto (no hace falta -n)
 mkdir -p $L /home/ubuntu/.kube
@@ -182,7 +182,7 @@ kubectl apply -f $L/app.yaml
 log "Instalando kube-state-metrics v2.13.0"
 KSM=https://raw.githubusercontent.com/kubernetes/kube-state-metrics/v2.13.0/examples/standard
 for f in service-account cluster-role cluster-role-binding deployment service; do
-  until kubectl apply -f $KSM/$f.yaml; do sleep 10; done
+  until kubectl apply -f $KSM/$f.yaml; do sleep 3; done
 done
 kubectl apply -f $L/deployments.yaml
 
